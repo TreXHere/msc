@@ -1,6 +1,5 @@
 from YMusic import app
 from YMusic.core import userbot
-from YMusic.utils.ytDetails import searchYt, extract_video_id
 from YMusic.utils.queue import QUEUE, add_to_queue
 from YMusic.misc import SUDOERS
 
@@ -9,36 +8,36 @@ from pyrogram import filters
 import asyncio
 import random
 import time
-
+import spotdl
 import config
 
 PLAY_COMMAND = ["P", "PLAY"]
 
 PREFIX = config.PREFIX
-
 RPREFIX = config.RPREFIX
 
+async def download_spotify_audio(link):
+    temp_file = f"temp{random.randint(1, 10000)}.mp3"
+    spotdl_args = ["spotdl", "--output", temp_file, link]
 
-async def ytdl(format: str, link: str):
-    stdout, stderr = await bash(
-        f'yt-dlp --geo-bypass -g -f "{format}" {link}'
-    )
-    if stdout:
-        return 1, stdout
-    return 0, stderr
-
-
-async def bash(cmd):
-    process = await asyncio.create_subprocess_shell(
-        cmd,
+    process = await asyncio.create_subprocess_exec(
+        *spotdl_args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
     stdout, stderr = await process.communicate()
-    err = stderr.decode().strip()
-    out = stdout.decode().strip()
-    return out, err
 
+    if process.returncode != 0:
+        return None, None, None
+
+    # Assuming SpotDL fetched details from Spotify successfully
+    info = {
+        "title": "Unknown Title",  # SpotDL doesn't provide title easily in its API
+        "duration": "Unknown Duration",  # SpotDL doesn't provide duration directly
+        "file": temp_file
+    }
+
+    return info["file"], info["title"], info["duration"]
 
 async def processReplyToMessage(message):
     msg = message.reply_to_message
@@ -48,16 +47,6 @@ async def processReplyToMessage(message):
         input_filename = audio_original
         return input_filename, m
     return None
-
-
-async def playWithLinks(link):
-    if "&" in link:
-        pass
-    if "?" in link:
-        pass
-
-    return 0
-
 
 @app.on_message((filters.command(PLAY_COMMAND, [PREFIX, RPREFIX])) & filters.group)
 async def _aPlay(_, message):
@@ -99,43 +88,33 @@ async def _aPlay(_, message):
     else:
         m = await message.reply_text("Rukja...Tera gaana dhund raha hu...")
         query = message.text.split(maxsplit=1)[1]
-        video_id = extract_video_id(query)
         try:
-            if video_id is None:
-                video_id = query
-            title, duration, link = searchYt(video_id)
-            if (title, duration, link) == (None, None, None):
-                return await m.edit("No results found")
+            audio_file, title, duration = await download_spotify_audio(query)
         except Exception as e:
             await message.reply_text(f"Error:- <code>{e}</code>")
             return
 
-        await m.edit("Rukja...Tera gaana download kar raha hu...")
-        format = "bestaudio"
-        resp, songlink = await ytdl(format, link)
-        if resp == 0:
-            await m.edit(f"❌ yt-dl issues detected\n\n» `{songlink}`")
+        if not audio_file:
+            await m.edit(f"❌ Error downloading from Spotify")
         else:
             if chat_id in QUEUE:
-                queue_num = add_to_queue(chat_id, title[:19], duration, songlink, link)
+                queue_num = add_to_queue(chat_id, title[:19], duration, audio_file, query)
                 await m.edit(
                     f"# {queue_num}\n{title[:19]}\nTera gaana queue me daal diya hu"
                 )
                 return
-            # await asyncio.sleep(1)
-            Status, Text = await userbot.playAudio(chat_id, songlink)
+
+            Status, Text = await userbot.playAudio(chat_id, audio_file)
             if Status == False:
                 await m.edit(Text)
-            if duration is None:
-                duration = "Playing From LiveStream"
-            add_to_queue(chat_id, title[:19], duration, songlink, link)
-            finish_time = time.time()
-            total_time_taken = str(int(finish_time - start_time)) + "s"
-            await m.edit(
-                f"Tera gaana play kar rha hu aaja vc\n\nSongName:- [{title[:19]}]({link})\nDuration:- {duration}\nTime taken to play:- {total_time_taken}",
-                disable_web_page_preview=True,
-            )
-
+            else:
+                add_to_queue(chat_id, title[:19], duration, audio_file, query)
+                finish_time = time.time()
+                total_time_taken = str(int(finish_time - start_time)) + "s"
+                await m.edit(
+                    f"Tera gaana play kar rha hu aaja vc\n\nSongName:- [{title[:19]}]({query})\nDuration:- {duration}\nTime taken to play:- {total_time_taken}",
+                    disable_web_page_preview=True,
+                )
 
 @app.on_message((filters.command(PLAY_COMMAND, [PREFIX, RPREFIX])) & SUDOERS)
 async def _raPlay(_, message):
@@ -148,21 +127,21 @@ async def _raPlay(_, message):
         m = await message.reply_text("Searching Your Query...")
         query = message.text.split(" ", 2)[2]
         msg_id = message.text.split(" ", 2)[1]
-        title, duration, link = searchYt(query)
-        await m.edit("Downloading...")
-        format = "bestaudio"
-        resp, songlink = await ytdl(format, link)
-        if resp == 0:
-            await m.edit(f"❌ yt-dl issues detected\n\n» `{songlink}`")
+        try:
+            audio_file, title, duration = await download_spotify_audio(query)
+        except Exception as e:
+            await message.reply_text(f"Error:- <code>{e}</code>")
+            return
+        
+        if not audio_file:
+            await m.edit(f"❌ Error downloading from Spotify")
         else:
-            Status, Text = await userbot.playAudio(msg_id, songlink)
+            Status, Text = await userbot.playAudio(msg_id, audio_file)
             if Status == False:
                 await m.edit(Text)
-            if duration is None:
-                duration = "Playing From LiveStream"
             finish_time = time.time()
             total_time_taken = str(int(finish_time - start_time)) + "s"
             await m.edit(
-                f"Tera gaana play kar rha hu aaja vc\n\nSongName:- [{title[:19]}]({link})\nDuration:- {duration}\nTime taken to play:- {total_time_taken}",
+                f"Tera gaana play kar rha hu aaja vc\n\nSongName:- [{title[:19]}]({query})\nDuration:- {duration}\nTime taken to play:- {total_time_taken}",
                 disable_web_page_preview=True,
             )
